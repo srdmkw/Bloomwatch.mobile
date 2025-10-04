@@ -1,35 +1,43 @@
-const express = require('express');
-const path = require('path');
-const app = express();
-const port = process.env.PORT || 3000;
+// Создание карты
+const map = L.map('map').setView([41.3, 69.2], 5);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 10,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
 
-app.use(express.static(path.join(__dirname, 'public')));
-
-// sample dates (in production: generate from DB or tile metadata)
-const dates = ["2025-03-28","2025-04-05","2025-04-15"];
-
-// load sample geojson per date from samples folder
-app.get('/api/dates', (req, res) => {
-  res.json(dates);
-});
-
-app.get('/api/blooms', (req, res) => {
-  const date = req.query.date;
-  if(!date || !dates.includes(date)) {
-    return res.status(400).json({type:'FeatureCollection',features:[]});
-  }
+// Функция для запроса NDVI с NASA POWER API
+async function getNDVI(lat, lon) {
+  const url = `https://power.larc.nasa.gov/api/temporal/monthly/point?parameters=NDVI&community=AG&longitude=${lon}&latitude=${lat}&start=2020&end=2025&format=JSON`;
   try {
-    const data = require('./samples/' + date + '.geojson');
-    return res.json(data);
-  } catch(e){
-    console.error('missing sample for', date, e);
-    return res.json({type:'FeatureCollection',features:[]});
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.properties.parameter.NDVI;
+  } catch (e) {
+    console.error("Ошибка получения данных:", e);
+    return null;
   }
-});
+}
 
-// fallback to index.html for SPA
-app.get('*', (req,res)=> {
-  res.sendFile(path.join(__dirname,'public','index.html'));
-});
+// При клике на карту — показать NDVI
+map.on('click', async (e) => {
+  const lat = e.latlng.lat.toFixed(3);
+  const lon = e.latlng.lng.toFixed(3);
+  const ndviData = await getNDVI(lat, lon);
 
-app.listen(port, ()=> console.log(`BloomWatch server running on http://localhost:${port}`));
+  if (!ndviData) {
+    L.popup()
+      .setLatLng(e.latlng)
+      .setContent("❌ Не удалось получить данные NASA")
+      .openOn(map);
+    return;
+  }
+
+  const years = Object.keys(ndviData);
+  const lastYear = years[years.length - 1];
+  const lastValue = ndviData[lastYear].toFixed(3);
+
+  L.popup()
+    .setLatLng(e.latlng)
+    .setContent(`📍 Координаты: ${lat}, ${lon}<br>🌿 NDVI (${lastYear}): ${lastValue}`)
+    .openOn(map);
+});
