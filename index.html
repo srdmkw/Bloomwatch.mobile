@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>BloomWatch — интерактивная карта цветения</title>
+<link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto}
+  #map{position:absolute;top:60px;bottom:0;left:0;right:0}
+  .topbar{position:fixed;left:8px;right:8px;top:8px;height:44px;background:rgba(255,255,255,0.95);display:flex;align-items:center;gap:8px;padding:6px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.08)}
+  .btn{padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer}
+  .slider-wrap{display:flex;align-items:center;gap:8px;flex:1}
+  #dateLabel{min-width:170px;font-weight:600}
+  .legend{position:fixed;right:12px;top:12px;background:rgba(255,255,255,0.95);padding:8px;border-radius:8px;font-size:13px}
+  .popup-chart{width:220px;height:120px}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <button id="play" class="btn">▶ Play</button>
+  <div class="slider-wrap">
+    <input id="timeSlider" type="range" min="0" max="0" value="0" style="width:100%">
+    <div id="dateLabel">—</div>
+  </div>
+  <button id="toggleHeat" class="btn">Heatmap ON</button>
+</div>
+<div id="map"></div>
+<div class="legend" id="legend">
+  <div><strong>Bloom intensity</strong></div>
+  <div style="margin-top:6px">Heatmap = растущая яркость = больше цветения</div>
+</div>
+
+<script>
+// fetch list of available dates from API
+async function fetchDates(){
+  try {
+    const res = await fetch('/api/dates');
+    return await res.json();
+  } catch(e){
+    console.error('Could not fetch dates', e);
+    return [];
+  }
+}
+
+let dates = [];
+const slider = document.getElementById('timeSlider');
+const label = document.getElementById('dateLabel');
+let playing=false, playTimer=null;
+
+document.getElementById('play').onclick = () => {
+  playing = !playing;
+  document.getElementById('play').textContent = playing ? '⏸ Pause' : '▶ Play';
+  if(playing){ playTimer = setInterval(()=>{ slider.value = Math.min(slider.max, +slider.value + 1); slider.dispatchEvent(new Event('input')); if(+slider.value===+slider.max){ clearInterval(playTimer); playing=false; document.getElementById('play').textContent='▶ Play'; } }, 800); }
+  else clearInterval(playTimer);
+};
+
+document.getElementById('toggleHeat').addEventListener('click', (ev) => {
+  const el = ev.target;
+  const vis = map.getLayoutProperty('bloom-heat','visibility') || 'visible';
+  if(vis === 'visible'){
+    map.setLayoutProperty('bloom-heat','visibility','none');
+    el.textContent = 'Heatmap OFF';
+  } else {
+    map.setLayoutProperty('bloom-heat','visibility','visible');
+    el.textContent = 'Heatmap ON';
+  }
+});
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: {
+    "version":8,
+    "sources": {
+      "osm-tiles": {
+        "type":"raster",
+        "tiles":["https://a.tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        "tileSize":256,
+        "attribution":"© OpenStreetMap contributors"
+      }
+    },
+    "layers":[{"id":"osm","type":"raster","source":"osm-tiles"}]
+  },
+  center: [10,20],
+  zoom: 2
+});
+
+map.on('load', async () => {
+  map.addSource('blooms', { type: 'geojson', data: { "type":"FeatureCollection","features": [] } });
+
+  map.addLayer({
+    id: 'bloom-heat',
+    type: 'heatmap',
+    source: 'blooms',
+    maxzoom: 9,
+    paint: {
+      'heatmap-weight': ['interpolate', ['linear'], ['get', 'intensity'], 0, 0, 1, 1],
+      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3],
+      'heatmap-color': [
+        'interpolate',
+        ['linear'],
+        ['heatmap-density'],
+        0, 'rgba(0,0,0,0)',
+        0.2, 'rgba(33,102,172,0.2)',
+        0.4, 'rgba(103,169,207,0.4)',
+        0.6, 'rgba(209,229,240,0.6)',
+        0.8, 'rgba(253,219,199,0.8)',
+        1, 'rgba(178,24,43,1)'
+      ],
+      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 10, 9, 40],
+      'heatmap-opacity': 0.9
+    }
+  });
+
+  map.addLayer({
+    id: 'bloom-points',
+    type: 'circle',
+    source: 'blooms',
+    minzoom: 6,
+    paint: {
+      'circle-radius': ['interpolate',['linear'], ['get','intensity'], 0,6,1,18],
+      'circle-color': ['interpolate',['linear'], ['get','intensity'], 0, '#ffffb2', 0.5, '#fecc5c', 1, '#e31a1c'],
+      'circle-opacity': 0.95,
+      'circle-stroke-color':'#222',
+      'circle-stroke-width':1
+    }
+  });
+
+  dates = await fetchDates();
+  if(!dates.length){
+    label.textContent = 'нет данных';
+    return;
+  }
+  slider.max = Math.max(0, dates.length-1);
+  slider.value = 0;
+  label.textContent = dates[0];
+  // initial load
+  await loadDate(0);
+});
+
+slider.addEventListener('input', async (ev) => {
+  const idx = +ev.target.value;
+  await loadDate(idx);
+});
+
+async function loadDate(index){
+  const selected = dates[Math.max(0, Math.min(dates.length-1, index))];
+  label.textContent = selected;
+  try {
+    const res = await fetch(`/api/blooms?date=${selected}`);
+    const geo = await res.json();
+    map.getSource('blooms').setData(geo);
+  } catch(e){
+    console.error('error loading blooms', e);
+  }
+}
+
+map.on('click', 'bloom-points', (e) => {
+  const feat = e.features[0];
+  const props = feat.properties ? feat.properties : {};
+  let tok = props.timeseries;
+  try{ if(typeof tok === 'string') tok = JSON.parse(tok); } catch(e){ tok = null; }
+  const popupNode = document.createElement('div');
+  popupNode.style.minWidth = '250px';
+  popupNode.innerHTML = `
+    <div style="font-weight:700;margin-bottom:6px">${props.species || 'Unknown'} — ${props.date || ''}</div>
+    <div>Intensity: ${(parseFloat(props.intensity)||0).toFixed(2)} • Confidence: ${(parseFloat(props.confidence)||0).toFixed(2)}</div>
+    <canvas id="chart-${props.id}" class="popup-chart"></canvas>
+    <div style="margin-top:6px;font-size:12px;color:#555">ID: ${props.id || ''}</div>
+  `;
+  new maplibregl.Popup({ maxWidth: "300px" })
+    .setLngLat(feat.geometry.coordinates)
+    .setDOMContent(popupNode)
+    .addTo(map);
+
+  setTimeout(()=>{
+    const ctx = document.getElementById(`chart-${props.id}`);
+    if(!ctx || !tok) return;
+    const labels = tok.map(d => d.date);
+    const values = tok.map(d => d.value);
+    new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'Vegetation index', data: values, fill:true, tension:0.2 }] },
+      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}} , scales:{y:{beginAtZero:true}} }
+    });
+  }, 120);
+});
+
+</script>
+</body>
+</html>
