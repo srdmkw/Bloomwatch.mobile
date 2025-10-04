@@ -1,29 +1,43 @@
-// Google Earth Engine snippet (paste into code editor: https://code.earthengine.google.com/)
-/*
-  Simple NDVI time-series + SOS detection per tile.
-  This is a starting point — adapt to your AOI and export results to Drive/Cloud.
-*/
-var start = '2023-01-01';
-var end = '2025-12-31';
-var region = ee.Geometry.Rectangle([-180,-60,180,85]); // global (be careful)
-var collection = ee.ImageCollection('MODIS/061/MOD13Q1')
-  .filterDate(start, end)
-  .select('NDVI');
+// Создание карты
+const map = L.map('map').setView([41.3, 69.2], 5);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 10,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
 
-var ndviSmoothed = collection.map(function(img){ return img.visualize(); });
+// Функция для запроса NDVI с NASA POWER API
+async function getNDVI(lat, lon) {
+  const url = `https://power.larc.nasa.gov/api/temporal/monthly/point?parameters=NDVI&community=AG&longitude=${lon}&latitude=${lat}&start=2020&end=2025&format=JSON`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.properties.parameter.NDVI;
+  } catch (e) {
+    console.error("Ошибка получения данных:", e);
+    return null;
+  }
+}
 
-// Example: compute per-pixel mean and anomaly for a period
-var mean = collection.filterDate('2024-01-01','2024-12-31').mean();
-var anomaly = collection.mean().subtract(mean);
+// При клике на карту — показать NDVI
+map.on('click', async (e) => {
+  const lat = e.latlng.lat.toFixed(3);
+  const lon = e.latlng.lng.toFixed(3);
+  const ndviData = await getNDVI(lat, lon);
 
-// For phenology, use time-series per pixel and apply Savitzky-Golay smoothing (examples exist in GEE community)
-/* export to drive example:
-Export.image.toDrive({
-  image: mean,
-  description: 'NDVI_mean_2024',
-  scale: 250,
-  region: region,
-  maxPixels: 1e13
+  if (!ndviData) {
+    L.popup()
+      .setLatLng(e.latlng)
+      .setContent("❌ Не удалось получить данные NASA")
+      .openOn(map);
+    return;
+  }
+
+  const years = Object.keys(ndviData);
+  const lastYear = years[years.length - 1];
+  const lastValue = ndviData[lastYear].toFixed(3);
+
+  L.popup()
+    .setLatLng(e.latlng)
+    .setContent(`📍 Координаты: ${lat}, ${lon}<br>🌿 NDVI (${lastYear}): ${lastValue}`)
+    .openOn(map);
 });
-*/
-print('GEE snippet loaded. Adapt for SOS detection and export.');
